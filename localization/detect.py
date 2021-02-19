@@ -86,9 +86,10 @@ def main(_argv):
         image = Image.fromarray(image.astype(np.uint8))
         image.show()
         image = cv2.cvtColor(np.array(image), cv2.COLOR_BGR2RGB)
-        cv2.imwrite('./detections/' + 'detection' + str(count) + '.png', image)
+        # # write to detection folder
+        # cv2.imwrite('./detections/' + 'detection' + str(count) + '.png', image)
 
-        # # cropped image
+        # # cropp image and write to crop folder
         # image = crop(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB), pred_bbox)
         # image = Image.fromarray(image.astype(np.uint8))
         # image.show()
