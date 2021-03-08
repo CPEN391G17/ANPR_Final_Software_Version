@@ -6,35 +6,277 @@ import tensorflow as tf
 import pytesseract
 from core.config import cfg
 import re
+import os
 
 # If you don't have tesseract executable in your PATH, include the following:
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 # Example tesseract_cmd = r'C:\Program Files (x86)\Tesseract-OCR\tesseract'
 
 # function to recognize license plate numbers using Tesseract OCR
+# def recognize_plate(img, coords):
+#     # separate coordinates from box
+#     xmin, ymin, xmax, ymax = coords
+#     # get the subimage that makes up the bounded region and take an additional 5 pixels on each side
+#     box = img[int(ymin)-5:int(ymax)+5, int(xmin)-5:int(xmax)+5]
+#     # grayscale region within bounding box
+#     gray = cv2.cvtColor(box, cv2.COLOR_RGB2GRAY)
+#     # resize image to three times as large as original for better readability
+#     gray = cv2.resize(gray, None, fx = 3, fy = 3, interpolation = cv2.INTER_CUBIC)
+#     # perform gaussian blur to smoothen image
+#     blur = cv2.GaussianBlur(gray, (5,5), 0)
+#     #cv2.imshow("Gray", gray)
+#     #cv2.waitKey(0)
+#     # threshold the image using Otsus method to preprocess for tesseract
+#     ret, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
+#     #cv2.imshow("Otsu Threshold", thresh)
+#     #cv2.waitKey(0)
+#     # create rectangular kernel for dilation
+#     rect_kern = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+#     # apply dilation to make regions more clear
+#     dilation = cv2.dilate(thresh, rect_kern, iterations = 1)
+#     #cv2.imshow("Dilation", dilation)
+#     #cv2.waitKey(0)
+#     # find contours of regions of interest within license plate
+#     try:
+#         contours, hierarchy = cv2.findContours(dilation, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+#     except:
+#         ret_img, contours, hierarchy = cv2.findContours(dilation, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+#     # sort contours left-to-right
+#     sorted_contours = sorted(contours, key=lambda ctr: cv2.boundingRect(ctr)[0])
+#     # create copy of gray image
+#     im2 = gray.copy()
+#     # create blank string to hold license plate number
+#     plate_num = ""
+#     # loop through contours and find individual letters and numbers in license plate
+#     for cnt in sorted_contours:
+#         x,y,w,h = cv2.boundingRect(cnt)
+#         height, width = im2.shape
+#         # if height of box is not tall enough relative to total height then skip
+#         if height / float(h) > 6: continue
+
+#         ratio = h / float(w)
+#         # if height to width ratio is less than 1.5 skip
+#         if ratio < 1.5: continue
+
+#         # if width is not wide enough relative to total width then skip
+#         if width / float(w) > 15: continue
+
+#         area = h * w
+#         # if area is less than 100 pixels skip
+#         if area < 100: continue
+
+#         # draw the rectangle
+#         rect = cv2.rectangle(im2, (x,y), (x+w, y+h), (0,255,0),2)
+#         # grab character region of image
+#         roi = thresh[y-5:y+h+5, x-5:x+w+5]
+#         # perfrom bitwise not to flip image to black text on white background
+#         roi = cv2.bitwise_not(roi)
+#         # perform another blur on character region
+#         roi = cv2.medianBlur(roi, 5)
+#         try:
+#             text = pytesseract.image_to_string(roi, config='-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ --psm 8 --oem 3')
+#             # clean tesseract text by removing any unwanted blank spaces
+#             clean_text = re.sub('[\W_]+', '', text)
+#             plate_num += clean_text
+#         except: 
+#             text = None
+#     if plate_num != None:
+#         print("License Plate #: ", plate_num)
+#     #cv2.imshow("Character's Segmented", im2)
+#     #cv2.waitKey(0)
+#     return plate_num
+
+# function to regognize chars from sorter countours of LP
+def find_character_contour(sorted_contours, im2, thresh):
+    cnts = []
+
+    for cnt in sorted_contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        height, width = im2.shape
+        # if height of box is not tall enough relative to total height then skip
+        if height / float(h) > 5: continue  # REQ: float(h) > height / 5
+
+        ratio = h / float(w)
+        # if height to width ratio is less than 1.5 skip
+        if ratio < 1.5: continue  # REQ: h > 1.5 * w
+
+        # if width is not wide enough relative to total width then skip
+        if width / float(w) > 15: continue  # REQ: float(w) > width / 15
+
+        area = h * w
+        # if area is less than 100 pixels skip
+        if area < 100: continue  # REQ: area > 100
+
+        # draw the rectangle
+        rect = cv2.rectangle(im2, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        # grab character region of image
+        roi = thresh[y - 5:y + h + 5, x - 5:x + w + 5]
+        # perfrom bitwise not to flip image to black text on white background
+        roi = cv2.bitwise_not(roi)
+        # perform another blur on character region
+        roi = cv2.medianBlur(roi, 5)
+
+        # cv2.imshow("roi",roi)
+
+        cnts.append(cnt)
+
+    return cnts
+
+
+def add_missed_chars(sorted_contours, cnts, im2, thresh):
+    for cnt in sorted_contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        ratio = h / float(w)
+        # if height to width ratio is less than 1.5 skip
+        if ratio < 1.5: continue
+        height_threshold = h / 10.0
+        present = False
+        add = False
+        for cnt_stored in cnts:
+            if np.array_equal(cnt, cnt_stored):
+                present = True
+                break
+            X, Y, W, H = cv2.boundingRect(cnt_stored)
+            if abs(y - Y) <= height_threshold and abs(h - H) <= height_threshold:
+                add = True
+
+        if present == False and add == True:
+            roi2 = thresh[y - 5:y + h + 5, x - 5:x + w + 5]
+            # perfrom bitwise not to flip image to black text on white background
+            roi2 = cv2.bitwise_not(roi2)
+            # perform another blur on character region
+            roi2 = cv2.medianBlur(roi2, 5)
+
+            # cv2.imshow("roi",roi2)
+            # cv2.waitKey(0)
+            # cv2.destroyAllWindows()
+            cnts.append(cnt)
+
+
+def remove_garbage_contours(plausible_characters):
+    grouped_cnts = []
+    for cnt in plausible_characters:
+        x, y, w, h = cv2.boundingRect(cnt)
+        height_threshold = h / 5.0
+
+        grouped = False
+        for group in grouped_cnts:
+            if grouped:
+                break
+            for X, Y, W, H in group:
+                if abs(y - Y) <= height_threshold and abs(h - H) <= height_threshold:
+                    # append x,y,w,h to group
+                    group.append((x, y, w, h))
+                    grouped = True
+                    break
+
+        if not grouped:
+            grouped_cnts.append([(x, y, w, h)])
+
+    grouped_cnts_lengths = [len(x) for x in grouped_cnts]
+
+    removables = []
+    for i in range(len(grouped_cnts_lengths)):
+        if grouped_cnts_lengths[i] == max(grouped_cnts_lengths):
+            continue
+        for x, y, w, h in grouped_cnts[i]:
+            removables.append((x, y, w, h))
+
+    removables_set = set(removables)
+    for cnt in plausible_characters:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if (x, y, w, h) in removables_set:
+            plausible_characters.remove(cnt)
+
+
+def save_cropped_char(path, rois):
+    for roi in rois:
+        file_names = os.listdir(path)
+        file_numbers = [int(file[:-4]) for file in file_names]
+        last_file = max(file_numbers)
+        new_file_name = str(last_file + 1) + '.jpg'
+        new_file_path = os.path.join(path, new_file_name)
+        cv2.imwrite(new_file_path, roi)
+        # cv2.waitKey(0)
+
+
+def is_black_on_white(roi):
+    w, h = roi.shape
+    top_row_sum = np.sum(roi[0, :])
+    left_col_sum = np.sum(roi[:, 0])
+    bottom_row_sum = np.sum(roi[-1, :])
+    right_col_sum = np.sum(roi[:, -1])
+    avg_intensity = (top_row_sum + left_col_sum + bottom_row_sum + right_col_sum) / (2 * w + 2 * h)
+    return avg_intensity > 127
+
+
+def get_rois(cnts, thresh):
+    rois = []
+    for cnt in cnts:
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        roi = thresh[y - 5:y + h + 5, x - 5:x + w + 5]
+
+        if not is_black_on_white(roi):
+            # perfrom bitwise not to flip image to black text on white background
+            roi = cv2.bitwise_not(roi)
+        # perform another blur on character region
+        roi = cv2.medianBlur(roi, 5)
+        rois.append(roi)
+
+    return rois
+
+
+def hconcat_resize(img_list, interpolation=cv2.INTER_CUBIC):
+    # take minimum hights
+    h_min = min(img.shape[0] for img in img_list)
+
+    # image resizing
+    im_list_resize = [cv2.resize(img, (int(img.shape[1] * h_min / img.shape[0]), h_min), interpolation=interpolation)
+                      for img in img_list]
+
+    # return final image
+    return cv2.hconcat(im_list_resize)
+
+
+def show_detected_rois(rois):
+    rois_concat = hconcat_resize(rois)
+    cv2.imshow("all characters", rois_concat)
+    cv2.waitKey(0)
+    return rois_concat
+    # cv2.destroyAllWindows()
+
+
+def debug_contour_pos(plausible_characters):
+    plausible_characters_pos = [cv2.boundingRect(cnt) for cnt in plausible_characters]
+    print(plausible_characters_pos)
+
+
+# function to recognize license plate numbers using Tesseract OCR
 def recognize_plate(img, coords):
     # separate coordinates from box
     xmin, ymin, xmax, ymax = coords
     # get the subimage that makes up the bounded region and take an additional 5 pixels on each side
-    box = img[int(ymin)-5:int(ymax)+5, int(xmin)-5:int(xmax)+5]
+    box = img[int(ymin) - 5:int(ymax) + 5, int(xmin) - 5:int(xmax) + 5]
     # grayscale region within bounding box
     gray = cv2.cvtColor(box, cv2.COLOR_RGB2GRAY)
     # resize image to three times as large as original for better readability
-    gray = cv2.resize(gray, None, fx = 3, fy = 3, interpolation = cv2.INTER_CUBIC)
+    gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
     # perform gaussian blur to smoothen image
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
-    #cv2.imshow("Gray", gray)
-    #cv2.waitKey(0)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    # cv2.imshow("Gray", gray)
+    # cv2.waitKey(0)
     # threshold the image using Otsus method to preprocess for tesseract
     ret, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
-    #cv2.imshow("Otsu Threshold", thresh)
-    #cv2.waitKey(0)
+    # cv2.imshow("Otsu Threshold", thresh)
+    # cv2.waitKey(0)
     # create rectangular kernel for dilation
-    rect_kern = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+    rect_kern = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     # apply dilation to make regions more clear
-    dilation = cv2.dilate(thresh, rect_kern, iterations = 1)
-    #cv2.imshow("Dilation", dilation)
-    #cv2.waitKey(0)
+    # dilation = cv2.dilate(thresh, rect_kern, iterations = 1)
+    dilation = thresh
+    cv2.imshow("Dilation", dilation)
+    cv2.waitKey(0)
     # find contours of regions of interest within license plate
     try:
         contours, hierarchy = cv2.findContours(dilation, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -42,49 +284,47 @@ def recognize_plate(img, coords):
         ret_img, contours, hierarchy = cv2.findContours(dilation, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     # sort contours left-to-right
     sorted_contours = sorted(contours, key=lambda ctr: cv2.boundingRect(ctr)[0])
+    print('sorted contours len:', len(sorted_contours), ', countours len: ', len(contours))
+
     # create copy of gray image
     im2 = gray.copy()
     # create blank string to hold license plate number
     plate_num = ""
     # loop through contours and find individual letters and numbers in license plate
-    for cnt in sorted_contours:
-        x,y,w,h = cv2.boundingRect(cnt)
-        height, width = im2.shape
-        # if height of box is not tall enough relative to total height then skip
-        if height / float(h) > 6: continue
 
-        ratio = h / float(w)
-        # if height to width ratio is less than 1.5 skip
-        if ratio < 1.5: continue
+    plausible_characters = find_character_contour(sorted_contours, im2, thresh)
+    debug_contour_pos(plausible_characters)
 
-        # if width is not wide enough relative to total width then skip
-        if width / float(w) > 15: continue
+    remove_garbage_contours(plausible_characters)
 
-        area = h * w
-        # if area is less than 100 pixels skip
-        if area < 100: continue
+    add_missed_chars(sorted_contours, plausible_characters, im2, thresh)
+    plausible_characters = sorted(plausible_characters, key=lambda ctr: cv2.boundingRect(ctr)[0])
+    debug_contour_pos(plausible_characters)
 
-        # draw the rectangle
-        rect = cv2.rectangle(im2, (x,y), (x+w, y+h), (0,255,0),2)
-        # grab character region of image
-        roi = thresh[y-5:y+h+5, x-5:x+w+5]
-        # perfrom bitwise not to flip image to black text on white background
-        roi = cv2.bitwise_not(roi)
-        # perform another blur on character region
-        roi = cv2.medianBlur(roi, 5)
-        try:
-            text = pytesseract.image_to_string(roi, config='-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ --psm 8 --oem 3')
-            # clean tesseract text by removing any unwanted blank spaces
-            clean_text = re.sub('[\W_]+', '', text)
-            plate_num += clean_text
-        except: 
-            text = None
+    rois = get_rois(plausible_characters, thresh)
+
+    # save_dir = r"C:\Users\Vijeeth Rakshakar\Documents\CPEN 391\Char recognition\cropped_chars_test"
+    # crop_filt = False
+    # if crop_filt:
+    #     save_cropped_char(save_dir, rois)
+
+    roi = show_detected_rois(rois)
+
+    try:
+        text = pytesseract.image_to_string(roi, config='-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ --psm 8 --oem 3')
+        # clean tesseract text by removing any unwanted blank spaces
+        clean_text = re.sub('[\W_]+', '', text)
+        plate_num += clean_text
+    except:
+        text = None
     if plate_num != None:
         print("License Plate #: ", plate_num)
-    #cv2.imshow("Character's Segmented", im2)
-    #cv2.waitKey(0)
-    return plate_num
+    # print(cnts_pos)
+    #
+    # cv2.imshow("Character's Segmented", im2)
+    # cv2.waitKey(0)
 
+    return plate_num
 
 # function to read class name
 def read_class_names(class_file_name):
